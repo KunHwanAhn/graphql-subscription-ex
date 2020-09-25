@@ -11,5 +11,9 @@
     "eslint-config-airbnb-base": "^14.2.0",
     "eslint-plugin-import": "^2.22.0",
     "nodemon": "^2.0.4"
+  },
+  "dependencies": {
+    "apollo-server": "^2.18.1",
+    "graphql": "^15.3.0"
   }
 }
