@@ -3,57 +3,40 @@ const bodyParser = require('koa-bodyparser');
 const cors = require('@koa/cors');
 
 const {
-  ApolloServer, gql, PubSub, withFilter,
+  ApolloServer, ApolloError, gql, PubSub,
 } = require('apollo-server-koa');
 
-const PORT = 3000;
+const PORT = 4000;
 const POST_ADDED = 'postAdded';
 
 const router = require('./routes');
 
+const app = new Koa();
 const pubsub = new PubSub();
 
 const typeDefs = gql`
   type Subscription {
-    ${POST_ADDED}: Post!
+    postAdded: Post
   }
-
   type Query {
-    posts: [Post!]
+    posts: [Post]
   }
-
   type Mutation {
-    addPost(author: String!, comment: String): Post!
+    addPost(author: String, comment: String): Post
   }
-
   type Post {
-    author: String!
-    comment: String!
+    author: String
+    comment: String
   }
 `;
 
-const posts = [
-  {
-    author: 'foo',
-    comment: 'foo-comment',
-  },
-  {
-    author: 'bar',
-    comment: 'bar-comment',
-  },
-];
+const posts = [];
 
 const resolvers = {
   Subscription: {
-    [POST_ADDED]: {
-      subscribe: () => {
-        console.log('postAdded - subscribe');
-        return pubsub.asyncIterator(POST_ADDED);
-      },
-      // subscribe: withFilter(
-      //   () => pubsub.asyncIterator(POST_ADDED),
-      //   // (payload, variables) => payload.commentAdded.repository_name === variables.repoFullName,
-      // ),
+    postAdded: {
+      // Additional event labels can be passed to asyncIterator creation
+      subscribe: () => pubsub.asyncIterator([POST_ADDED]),
     },
   },
   Query: {
@@ -66,38 +49,85 @@ const resolvers = {
       const newPost = { author, comment };
 
       posts.push(newPost);
-      pubsub.publish(POST_ADDED, { [POST_ADDED]: newPost });
+      pubsub.publish(POST_ADDED, { postAdded: newPost });
 
       return newPost;
     },
   },
 };
 
-const app = new Koa();
+// ... validate token and return a Promise, rejects in case of an error
+const validateToken = (authToken) => Promise.resolve(true);
+
+// ... finds user by auth token and return a Promise, rejects in case of an error
+const findUser = (authToken) => (tokenValidationResult) => new Promise((resolve, reject) => {
+  if (tokenValidationResult) {
+    return resolve({ userId: 1 });
+  }
+
+  return reject(new Error('NOT FOUND'));
+});
 
 const server = new ApolloServer({
   typeDefs,
   resolvers,
-  context: async ({ ctx }) => {
-    console.log('===========context==========');
+  context: ({ ctx, connection }) => {
+    console.log('===========context==============');
     console.log(ctx);
-    console.log('============================');
-    return {};
+    console.log(connection);
+    console.log('================================');
+
+    if (ctx) {
+      const { request } = ctx;
+      const { authtoken: authToken } = request.headers;
+
+      if (authToken) {
+        return validateToken(authToken)
+          .then(findUser(authToken))
+          .then((user) => {
+            console.log(user);
+
+            return {
+              request,
+              currentUser: user,
+            };
+          });
+      }
+
+      throw new ApolloError('Missing auth token!');
+    } else if (connection) {
+      return connection.context;
+    }
   },
   subscriptions: {
-    onConnect: (connectionParams, webSocket, context) => {
-      console.log('==========onConnect=============');
+    onConnect: (connectionParams, webSocket) => {
+      console.log('===========onConnect============');
       console.log(connectionParams);
       console.log(webSocket);
+      console.log('================================');
+
+      if (connectionParams.authToken) {
+        return validateToken(connectionParams.authToken)
+          .then(findUser(connectionParams.authToken))
+          .then((user) => {
+            console.log(user);
+
+            return {
+              currentUser: user,
+            };
+          });
+      }
+
+      throw new Error('Missing auth token!');
+    },
+    onDisconnect: (websocket, context) => {
+      console.log('===========onDisconnect=========');
+      console.log(websocket);
       console.log(context);
       console.log('================================');
     },
   },
-  playground: {
-    subscriptionEndpoint: 'subscriptions',
-  },
 });
-server.applyMiddleware({ app });
 
 app
   .use(cors())
@@ -105,7 +135,10 @@ app
   .use(router.routes())
   .use(router.allowedMethods());
 
-app.listen({ port: PORT }, () => {
+const httpServer = app.listen({ port: PORT }, () => {
   // eslint-disable-next-line no-console
   console.log(`🚀 Server ready at http://localhost:${PORT}${server.graphqlPath}`);
 });
+
+server.applyMiddleware({ app });
+server.installSubscriptionHandlers(httpServer);
